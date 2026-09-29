@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>IMPOSSIBLE RUN</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#07090f;font-family:monospace}
+body{touch-action:none;color:white}
+canvas{display:block;width:100%;height:100%;image-rendering:pixelated}
+
+#ui{
+ position:fixed;inset:0;pointer-events:none;
+}
+#top{
+ position:absolute;top:12px;left:50%;transform:translateX(-50%);
+ display:flex;gap:8px;align-items:center;
+ font-weight:bold;font-size:13px;
+}
+.badge{
+ background:#111827;border:2px solid #334155;
+ padding:7px 10px;box-shadow:3px 3px #020617;
+}
+#menu{
+ position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+ background:rgba(2,4,10,.86);pointer-events:auto;
+}
+.panel{
+ width:min(92%,460px);padding:28px;text-align:center;
+ background:#101522;border:4px solid #e5e7eb;
+ box-shadow:10px 10px #020617;
+}
+h1{font-size:clamp(30px,10vw,60px);color:#facc15;text-shadow:4px 4px #dc2626}
+.sub{margin:10px 0 22px;color:#94a3b8}
+button{
+ border:3px solid white;background:#facc15;color:#111827;
+ font:bold 16px monospace;padding:13px 20px;
+ box-shadow:5px 5px #000;cursor:pointer;
+}
+button:active{transform:translate(4px,4px);box-shadow:1px 1px #000}
+#touch{
+ position:absolute;bottom:18px;left:0;right:0;
+ display:flex;justify-content:space-between;padding:0 18px;
+ pointer-events:none;
+}
+.pad{display:flex;gap:10px}
+.tbtn{
+ width:62px;height:62px;border:3px solid #fff;
+ background:rgba(15,23,42,.8);color:#fff;
+ display:flex;align-items:center;justify-content:center;
+ font-size:25px;font-weight:bold;pointer-events:auto;
+ user-select:none;-webkit-user-select:none;
+}
+#msg{
+ position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);
+ font-size:28px;font-weight:bold;text-align:center;
+ text-shadow:4px 4px #000;opacity:0;transition:.2s;
+}
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="ui">
+  <div id="top">
+    <div class="badge">LEVEL <span id="level">1</span>/100</div>
+    <div class="badge">DEATHS <span id="deaths">0</span></div>
+    <div class="badge">TIME <span id="time">0.0</span></div>
+  </div>
+
+  <div id="msg"></div>
+
+  <div id="touch">
+    <div class="pad">
+      <div class="tbtn" data-key="ArrowLeft">◀</div>
+      <div class="tbtn" data-key="ArrowRight">▶</div>
+    </div>
+    <div class="pad">
+      <div class="tbtn" data-key="Space">●</div>
+      <div class="tbtn" data-key="ArrowUp">▲</div>
+    </div>
+  </div>
+</div>
+
+<div id="menu">
+ <div class="panel">
+   <h1>IMPOSSIBLE RUN</h1>
+   <div class="sub">
+     100 LEVEL • TRAPS • BOSS • CHECKPOINT<br>
+     Sulit, tetapi setiap level bisa ditamatkan.
+   </div>
+   <button id="start">MULAI GAME</button>
+   <p style="margin-top:18px;color:#64748b;font-size:12px">
+     PC: WASD / ARROW + SPACE<br>
+     HP: gunakan tombol layar
+   </p>
+ </div>
+</div>
+
+<script>
+"use strict";
+
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+let W=innerWidth,H=innerHeight,DPR=Math.min(devicePixelRatio||1,2);
+
+function resize(){
+ W=innerWidth;H=innerHeight;
+ canvas.width=W*DPR;canvas.height=H*DPR;
+ ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+addEventListener("resize",resize);
+resize();
+
+const keys={};
+let started=false;
+let level=1;
+let deaths=0;
+let levelStart=0;
+let cameraX=0;
+let won=false;
+let shake=0;
+
+addEventListener("keydown",e=>{
+ keys[e.code]=true;
+ if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code))
+   e.preventDefault();
+});
+addEventListener("keyup",e=>keys[e.code]=false);
+
+document.querySelectorAll(".tbtn").forEach(b=>{
+ const k=b.dataset.key;
+ const down=e=>{e.preventDefault();keys[k]=true};
+ const up=e=>{e.preventDefault();keys[k]=false};
+ b.addEventListener("touchstart",down,{passive:false});
+ b.addEventListener("touchend",up,{passive:false});
+ b.addEventListener("touchcancel",up,{passive:false});
+ b.addEventListener("mousedown",down);
+ b.addEventListener("mouseup",up);
+ b.addEventListener("mouseleave",up);
+});
+
+const startBtn=document.getElementById("start");
+startBtn.onclick=()=>{
+ started=true;
+ level=1;
+ deaths=0;
+ won=false;
+ levelStart=performance.now();
+ document.getElementById("menu").style.display="none";
+ resetLevel();
+};
+
+const player={
+ x:60,y:0,w:22,h:28,
+ vx:0,vy:0,
+ speed:3.5,
+ jump:10.5,
+ grounded:false
+};
+
+let world=[];
+let hazards=[];
+let coins=[];
+let checkpoint={x:60,y:0};
+let goal={x:0,y:0};
+
+function rand(n){
+ let x=Math.sin(n*999.91)*43758.5453;
+ return x-Math.floor(x);
+}
+
+/*
+  LEVEL GENERATOR
+  Setiap level dibuat deterministik.
+  Semakin tinggi level semakin panjang dan cepat.
+*/
+function generateLevel(lv){
+ world=[];
+ hazards=[];
+ coins=[];
+
+ const difficulty=lv/100;
+ const width=1500+lv*110;
+ const groundY=H-115;
+
+ world.push({x:0,y:groundY,w:width+800,h:300,type:"ground"});
+
+ let x=180;
+ let section=0;
+
+ while(x<width){
+   section++;
+
+   let gap=Math.min(70+lv*1.1,170);
+   let platformW=Math.max(90,180-lv*.65);
+
+   // Platform
+   world.push({
+     x:x,
+     y:groundY-rand(section+lv)*70,
+     w:platformW,
+     h:22,
+     type:"platform"
+   });
+
+   // Spike probability
+   if(section>2){
+     let count=1+Math.floor(rand(section*3+lv)*Math.min(5,1+lv/18));
+     for(let i=0;i<count;i++){
+       hazards.push({
+         x:x+25+i*28,
+         y:groundY-20,
+         w:20,
+         h:20,
+         type:"spike"
+       });
+     }
+   }
+
+   // Moving trap
+   if(lv>=5 && section%3===0){
+     hazards.push({
+       x:x+platformW/2,
+       y:groundY-170,
+       w:18,
+       h:170,
+       type:"laser",
+       phase:rand(section+lv)*6.28
+     });
+   }
+
+   // Falling block
+   if(lv>=12 && section%4===0){
+     hazards.push({
+       x:x+platformW/2,
+       y:groundY-280,
+       w:35,
+       h:35,
+       type:"block",
+       baseY:groundY-280,
+       phase:rand(lv+section)*6.28
+     });
+   }
+
+   // Coin
+   if(rand(section*7+lv)>.25){
+     coins.push({
+       x:x+platformW/2,
+       y:groundY-90-rand(section+88)*80,
+       r:7,
+       taken:false
+     });
+   }
+
+   x+=platformW+gap;
+ }
+
+ // Extra final platform
+ world.push({x:width,y:groundY-30,w:360,h:22,type:"platform"});
+
+ // Goal
+ goal={
+   x:width+220,
+   y:groundY-100,
+   w:30,
+   h:100
+ };
+
+ // Boss every 10 levels
+ if(lv%10===0){
+   hazards.push({
+     x:width+70,
+     y:groundY-150,
+     w:70,
+     h:70,
+     type:"boss",
+     hp:lv/10,
+     maxhp:lv/10,
+     vx:1.2+lv*.01,
+     baseY:groundY-150
+   });
+ }
+
+ checkpoint={
+   x:Math.max(50,width*.55),
+   y:groundY-100
+ };
+
+ player.x=60;
+ player.y=groundY-100;
+ player.vx=0;
+ player.vy=0;
+ cameraX=0;
+}
+
+function resetLevel(){
+ generateLevel(level);
+ levelStart=performance.now();
+}
+
+function rects(a,b){
+ return a.x<b.x+b.w &&
+        a.x+a.w>b.x &&
+        a.y<b.y+b.h &&
+        a.y+a.h>b.y;
+}
+
+function die(){
+ if(!started||won)return;
+ deaths++;
+ shake=15;
+ player.x=60;
+ player.y=H-230;
+ player.vx=0;
+ player.vy=0;
+ flash("TRY AGAIN","#ef4444");
+}
+
+function nextLevel(){
+ if(level>=100){
+   won=true;
+   document.getElementById("menu").style.display="flex";
+   document.querySelector(".panel").innerHTML=`
+     <h1 style="color:#22c55e">YOU WIN!</h1>
+     <div class="sub">
+       KAMU MENAMATKAN 100 LEVEL.<br><br>
+       DEATHS: ${deaths}
+     </div>
+     <button onclick="location.reload()">MAIN LAGI</button>
+   `;
+   return;
+ }
+
+ level++;
+ flash("LEVEL "+level,"#facc15");
+ resetLevel();
+}
+
+let flashTimer=0;
+
+function flash(text,color){
+ const m=document.getElementById("msg");
+ m.textContent=text;
+ m.style.color=color;
+ m.style.opacity=1;
+ flashTimer=35;
+}
+
+function updateFlash(){
+ if(flashTimer>0){
+   flashTimer--;
+   if(flashTimer===0)
+     document.getElementById("msg").style.opacity=0;
+ }
+}
+
+function update(){
+ if(!started||won)return;
+
+ const left=keys.ArrowLeft||keys.KeyA;
+ const right=keys.ArrowRight||keys.KeyD;
+ const jump=keys.ArrowUp||keys.KeyW||keys.Space;
+
+ let accel=0.55+level*.003;
+ let maxSpeed=3.5+level*.018;
+
+ if(left)player.vx-=accel;
+ if(right)player.vx+=accel;
+
+ if(!left&&!right)
+   player.vx*=.78;
+
+ player.vx=Math.max(-maxSpeed,Math.min(maxSpeed,player.vx));
+
+ if(jump&&player.grounded){
+   player.vy=-player.jump;
+   player.grounded=false;
+ }
+
+ player.vy+=0.48+level*.001;
+ if(player.vy>14)player.vy=14;
+
+ player.x+=player.vx;
+ player.y+=player.vy;
+
+ player.grounded=false;
+
+ // World collision
+ for(const p of world){
+   if(rects(player,p)){
+     const oldBottom=player.y-player.vy+player.h;
+
+     if(player.vy>=0 && oldBottom<=p.y+8){
+       player.y=p.y-player.h;
+       player.vy=0;
+       player.grounded=true;
+     }else if(player.vx>0){
+       player.x=p.x-player.w;
+       player.vx=0;
+     }else if(player.vx<0){
+       player.x=p.x+p.w;
+       player.vx=0;
+     }
+   }
+ }
+
+ // Hazards
+ for(const h of hazards){
+   if(h.type==="laser"){
+     h.phase+=.045+level*.0005;
+     h.h=100+Math.abs(Math.sin(h.phase))*130;
+     h.y=H-115-h.h;
+   }
+
+   if(h.type==="block"){
+     h.phase+=.04;
+     h.y=h.baseY+Math.sin(h.phase)*110;
+   }
+
+   if(h.type==="boss"){
+     h.x+=h.vx;
+     if(h.x>goal.x-90||h.x<goal.x-300)h.vx*=-1;
+     h.y=h.baseY+Math.sin(performance.now()/350)*35;
+   }
+
+   if(rects(player,h)){
+     if(h.type==="boss"){
+       // Boss tidak langsung membunuh jika terkena dari bawah.
+       if(player.vy>0 && player.y+player.h<h.y+25){
+         player.vy=-11;
+         h.hp--;
+         if(h.hp<=0){
+           h.dead=true;
+           flash("BOSS DEFEATED","#22c55e");
+         }
+       }else{
+         die();
+       }
+     }else{
+       die();
+     }
+   }
+ }
+
+ hazards=hazards.filter(h=>!h.dead);
+
+ // Coins
+ for(const c of coins){
+   if(!c.taken){
+     let dx=(player.x+player.w/2)-c.x;
+     let dy=(player.y+player.h/2)-c.y;
+     if(dx*dx+dy*dy<700)c.taken=true;
+   }
+ }
+
+ // Falling
+ if(player.y>H+100)die();
+
+ // Goal
+ if(rects(player,goal)){
+   nextLevel();
+ }
+
+ // Camera
+ const target=player.x-W*.35;
+ cameraX+=(target-cameraX)*.09;
+
+ if(cameraX<0)cameraX=0;
+
+ updateFlash();
+
+ document.getElementById("level").textContent=level;
+ document.getElementById("deaths").textContent=deaths;
+ document.getElementById("time").textContent=
+   ((performance.now()-levelStart)/1000).toFixed(1);
+}
+
+function drawBackground(){
+ ctx.fillStyle="#07090f";
+ ctx.fillRect(0,0,W,H);
+
+ // stars
+ for(let i=0;i<80;i++){
+   let x=(i*97-cameraX*.15)%W;
+   if(x<0)x+=W;
+   let y=(i*47)%Math.max(1,H-150);
+   ctx.fillStyle=i%3===0?"#475569":"#1e293b";
+   ctx.fillRect(x,y,2,2);
+ }
+
+ // moon
+ ctx.fillStyle="#f8fafc";
+ ctx.beginPath();
+ ctx.arc(W-100,90,32,0,Math.PI*2);
+ ctx.fill();
+
+ ctx.fillStyle="#cbd5e1";
+ ctx.beginPath();
+ ctx.arc(W-110,82,7,0,Math.PI*2);
+ ctx.fill();
+}
+
+function draw(){
+ ctx.save();
+
+ if(shake>0){
+   ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+   shake*=.8;
+   if(shake<.2)shake=0;
+ }
+
+ drawBackground();
+
+ ctx.save();
+ ctx.translate(-cameraX,0);
+
+ // World
+ for(const p of world){
+   if(p.type==="ground"){
+     ctx.fillStyle="#172033";
+     ctx.fillRect(p.x,p.y,p.w,p.h);
+     ctx.fillStyle="#334155";
+     ctx.fillRect(p.x,p.y,p.w,6);
+   }else{
+     ctx.fillStyle="#334155";
+     ctx.fillRect(p.x,p.y,p.w,p.h);
+     ctx.fillStyle="#64748b";
+     ctx.fillRect(p.x,p.y,p.w,5);
+   }
+ }
+
+ // Hazards
+ for(const h of hazards){
+   if(h.type==="spike"){
+     ctx.fillStyle="#ef4444";
+     ctx.beginPath();
+     ctx.moveTo(h.x,h.y+h.h);
+     ctx.lineTo(h.x+h.w/2,h.y);
+     ctx.lineTo(h.x+h.w,h.y+h.h);
+     ctx.closePath();
+     ctx.fill();
+   }
+
+   if(h.type==="laser"){
+     ctx.fillStyle="rgba(239,68,68,.25)";
+     ctx.fillRect(h.x-8,h.y,h.w+16,h.h);
+     ctx.fillStyle="#ef4444";
+     ctx.fillRect(h.x,h.y,h.w,h.h);
+   }
+
+   if(h.type==="block"){
+     ctx.fillStyle="#a855f7";
+     ctx.fillRect(h.x,h.y,h.w,h.h);
+     ctx.strokeStyle="#e9d5ff";
+     ctx.lineWidth=3;
+     ctx.strokeRect(h.x,h.y,h.w,h.h);
+   }
+
+   if(h.type==="boss"){
+     ctx.fillStyle="#7f1d1d";
+     ctx.fillRect(h.x,h.y,h.w,h.h);
+     ctx.fillStyle="#ef4444";
+     ctx.fillRect(h.x+10,h.y+15,12,12);
+     ctx.fillRect(h.x+48,h.y+15,12,12);
+     ctx.fillStyle="#fff";
+     ctx.fillRect(h.x+18,h.y+48,34,6);
+
+     ctx.fillStyle="#111";
+     ctx.fillRect(h.x,h.y-12,h.w,7);
+     ctx.fillStyle="#22c55e";
+     ctx.fillRect(h.x,h.y-12,h.w*(h.hp/h.maxhp),7);
+   }
+ }
+
+ // Coins
+ for(const c of coins){
+   if(c.taken)continue;
+   ctx.fillStyle="#facc15";
+   ctx.beginPath();
+   ctx.arc(c.x,c.y,c.r,0,Math.PI*2);
+   ctx.fill();
+   ctx.fillStyle="#fff7ae";
+   ctx.fillRect(c.x-2,c.y-5,3,5);
+ }
+
+ // Goal
+ ctx.fillStyle="#22c55e";
+ ctx.fillRect(goal.x,goal.y,goal.w,goal.h);
+ ctx.fillStyle="#86efac";
+ ctx.fillRect(goal.x+8,goal.y+10,12,12);
+
+ // Player
+ ctx.fillStyle="#38bdf8";
+ ctx.fillRect(player.x,player.y,player.w,player.h);
+ ctx.fillStyle="#e0f2fe";
+ ctx.fillRect(player.x+5,player.y+5,5,5);
+ ctx.fillRect(player.x+14,player.y+5,5,5);
+
+ ctx.fillStyle="#0f172a";
+ ctx.fillRect(player.x+6,player.y+19,11,4);
+
+ ctx.restore();
+
+ ctx.restore();
+
+ // Bottom instruction
+ ctx.fillStyle="rgba(15,23,42,.7)";
+ ctx.fillRect(0,H-38,W,38);
+ ctx.fillStyle="#94a3b8";
+ ctx.font="12px monospace";
+ ctx.textAlign="center";
+ ctx.fillText("HINDARI JEBakan • CAPAI GERBANG HIJAU • 100 LEVEL",W/2,H-15);
+}
+
+function loop(){
+ update();
+ draw();
+ requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+  </html>
